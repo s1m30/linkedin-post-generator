@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LinkedIn Post & Carousel Studio</title>
+    <meta name="description"
+        content="A premium AI-powered LinkedIn content generator, scheduler, and visual carousel designer.">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="glow-bg"></div>
+
+    <header class="app-header">
+        <div class="logo">
+            <span class="gradient-text"><i class="fa-brands fa-linkedin"></i> PostStudio</span>
+        </div>
+        <div class="status-bar">
+            <button id="theme-toggle" class="btn-theme-toggle" aria-label="Toggle Light/Dark Theme">
+                <i class="fa-solid fa-sun"></i>
+            </button>
+            <span id="api-status" class="status-badge connected"><i class="fa-solid fa-circle-check"></i> System
+                Online</span>
+        </div>
+    </header>
+
+    <main class="app-container">
+        <!-- LEFT: Generation Inputs -->
+        <section class="panel-left">
+            <div class="card glass">
+                <h2><i class="fa-solid fa-wand-magic-sparkles purple-glow"></i> Create Content</h2>
+                <form id="generator-form">
+                    <div class="form-group">
+                        <label for="post-title">Topic or Post Title</label>
+                        <input type="text" id="post-title" placeholder="e.g. 5 Rules for Async Python" required>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="post-type">Content Type</label>
+                            <select id="post-type">
+                                <option value="post" selected>LinkedIn Post (Markdown)</option>
+                                <option value="carousel">Visual Carousel (Slides)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="slides-count-group" style="display: none;">
+                            <label for="slides-count">Number of Slides</label>
+                            <input type="number" id="slides-count" min="3" max="15" value="5">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Web Reference Sources (Optional)</label>
+                        <div id="url-container">
+                            <div class="url-input-row">
+                                <input type="url" class="source-url" placeholder="https://example.com/article">
+                                <button type="button" class="btn-icon remove-url" style="display:none;"><i
+                                        class="fa-solid fa-trash"></i></button>
+                            </div>
+                        </div>
+                        <button type="button" id="add-url-btn" class="btn-text"><i class="fa-solid fa-plus"></i> Add Web
+                            Source</button>
+
+                        <div class="auto-search-row">
+                            <label class="checkbox-label" for="auto-search-toggle">
+                                <input type="checkbox" id="auto-search-toggle">
+                                <span>Auto-fetch sources via web search</span>
+                            </label>
+                            <div class="form-group" id="auto-search-count-group" style="display:none;">
+                                <label for="auto-search-count">Number of sources to fetch</label>
+                                <input type="number" id="auto-search-count" min="1" max="20" value="7">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="rough-draft">Rough Draft or Key Ideas (Optional)</label>
+                        <textarea id="rough-draft" rows="4"
+                            placeholder="Paste your messy thoughts, notes, or bullet points here..."></textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="style-select">Writing Style Template</label>
+                            <select id="style-select">
+                                <option value="">No template (Standard LinkedIn Copywriter)</option>
+                                <!-- Dynamic options -->
+                            </select>
+                        </div>
+                        <div class="form-group-btn">
+                            <button type="button" id="manage-styles-btn" class="btn btn-secondary"><i
+                                    class="fa-solid fa-sliders"></i> Styles</button>
+                        </div>
+                    </div>
+
+                    <div class="scheduling-section">
+                        <h3><i class="fa-regular fa-clock"></i> Schedule Publishing (Optional)</h3>
+                        <p class="section-desc">Leave empty to generate and preview immediately. Set a time to generate
+                            automatically and receive a Windows Notification when ready.</p>
+                        <div class="form-group">
+                            <label for="schedule-time">Schedule Date & Time (Local)</label>
+                            <input type="datetime-local" id="schedule-time">
+                        </div>
+                    </div>
+
+                    <div class="btn-group">
+                        <button type="submit" id="generate-btn" class="btn btn-primary">
+                            <span class="btn-text-content"><i class="fa-solid fa-bolt"></i> Generate Content</span>
+                            <div class="spinner" id="generate-spinner" style="display: none;"></div>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <!-- RIGHT: Live Preview & Refinement -->
+        <section class="panel-right">
+            <!-- Active Preview Panel -->
+            <div class="card glass preview-card">
+                <div class="preview-header">
+                    <h2><i class="fa-regular fa-eye"></i> Content Preview</h2>
+                    <div class="action-buttons">
+                        <button id="copy-btn" class="btn btn-secondary btn-sm" disabled><i
+                                class="fa-regular fa-copy"></i> Copy Content</button>
+                        <button id="regenerate-btn" class="btn btn-secondary btn-sm" style="display:none;"><i
+                                class="fa-solid fa-rotate"></i> Regenerate</button>
+                        <button id="download-pdf-btn" class="btn btn-secondary btn-sm" style="display:none;"><i
+                                class="fa-solid fa-file-pdf"></i> Download PDF</button>
+                    </div>
+                </div>
+
+                <div class="preview-container">
+                    <div id="preview-placeholder" class="preview-placeholder">
+                        <i class="fa-solid fa-pen-nib"></i>
+                        <p>Your generated post or visual carousel deck will appear here.</p>
+                        <span class="hint">Configure settings on the left and click "Generate".</span>
+                    </div>
+
+                    <!-- LinkedIn Text Post Preview -->
+                    <div id="post-preview" class="post-preview" style="display: none;">
+                        <div class="li-user-profile">
+                            <div class="li-avatar"><i class="fa-solid fa-user"></i></div>
+                            <div class="li-user-info">
+                                <span class="li-name">You</span>
+                                <span class="li-title">LinkedIn Post Studio Author</span>
+                                <span class="li-time">Just now • <i class="fa-solid fa-earth-americas"></i></span>
+                            </div>
+                        </div>
+                        <div id="post-content-body" class="post-content-body">
+                            <!-- Rendered Markdown goes here -->
+                        </div>
+                    </div>
+
+                    <!-- Carousel Preview -->
+                    <div id="carousel-preview" class="carousel-preview" style="display: none;">
+                        <div class="carousel-deck">
+                            <div class="carousel-slide-card" id="slide-card">
+                                <div class="slide-header">
+                                    <span class="slide-logo"><i class="fa-brands fa-linkedin"></i></span>
+                                    <span class="slide-num" id="slide-num">1 / 5</span>
+                                </div>
+                                <div class="slide-body">
+                                    <h3 id="slide-title">Slide Title</h3>
+                                    <div id="slide-content">Slide bullet points</div>
+                                </div>
+                                <div class="slide-footer">
+                                    <span class="slide-swipe-hint"><i class="fa-solid fa-angles-left"></i> Swipe to
+                                        read</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="carousel-controls">
+                            <button id="prev-slide-btn" class="btn btn-secondary btn-circle"><i
+                                    class="fa-solid fa-arrow-left"></i></button>
+                            <span class="slide-indicator" id="slide-indicator">Slide 1 of 5</span>
+                            <button id="next-slide-btn" class="btn btn-secondary btn-circle"><i
+                                    class="fa-solid fa-arrow-right"></i></button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Web Sources used for this generation -->
+                <div class="sources-container" id="sources-section" style="display: none;">
+                    <h3><i class="fa-solid fa-link"></i> Sources Used</h3>
+                    <ul class="sources-list" id="sources-list"></ul>
+                </div>
+
+                <!-- Refinement Interface -->
+                <div class="refinement-container" id="refinement-section" style="display: none;">
+                    <hr class="divider">
+                    <h3><i class="fa-regular fa-comment-dots"></i> Refine Content</h3>
+                    <form id="refinement-form">
+                        <div class="input-group">
+                            <input type="text" id="refinement-instruction"
+                                placeholder="Tell AI how to adjust this post (e.g. 'Make it shorter', 'Use a more casual tone')"
+                                required>
+                            <button type="submit" id="refine-btn" class="btn btn-primary">
+                                <span class="btn-text-content"><i class="fa-solid fa-paper-plane"></i> Refine</span>
+                                <div class="spinner" id="refine-spinner" style="display: none;"></div>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- History Feed / Saved Posts -->
+            <div class="card glass history-card">
+                <div class="preview-header">
+                    <h2><i class="fa-solid fa-clock-rotate-left"></i> Content History</h2>
+                    <button type="button" id="open-calendar-btn" class="btn btn-secondary btn-sm"><i
+                            class="fa-solid fa-calendar-days"></i> Calendar View</button>
+                </div>
+                <div class="history-list" id="history-list">
+                    <p class="no-history">No posts generated yet.</p>
+                    <!-- Dynamically populated -->
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- MODAL: Style Template Manager -->
+    <div class="modal-backdrop" id="styles-modal">
+        <div class="modal card glass">
+            <div class="modal-header">
+                <h2><i class="fa-solid fa-signature"></i> Writing Style Templates</h2>
+                <button type="button" class="btn-icon" id="close-modal-btn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="add-template-section">
+                    <h3>Create New Style Template</h3>
+                    <form id="template-form">
+                        <div class="form-group">
+                            <label for="template-name">Template Name</label>
+                            <input type="text" id="template-name" placeholder="e.g. Tech Deep-Dive, Casual & Short"
+                                required>
+                        </div>
+                        <div class="form-group">
+                            <label for="template-content">Example LinkedIn Post (AI will mimic this style)</label>
+                            <textarea id="template-content" rows="6" placeholder="Paste a successful post you wrote..."
+                                required></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary"><i class="fa-solid fa-plus"></i> Save Style
+                            Template</button>
+                    </form>
+                </div>
+                <hr class="divider">
+                <div class="existing-templates-section">
+                    <h3>Saved Templates</h3>
+                    <div id="templates-list" class="templates-list">
+                        <!-- Dynamic list of templates with Delete button -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Calendar View -->
+    <div class="modal-backdrop" id="calendar-modal">
+        <div class="modal card glass calendar-modal-card">
+            <div class="modal-header">
+                <h2><i class="fa-solid fa-calendar-days"></i> Content Calendar</h2>
+                <button type="button" class="btn-icon" id="close-calendar-btn"><i
+                        class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="calendar-nav">
+                    <button type="button" class="btn-icon" id="cal-prev-btn"><i
+                            class="fa-solid fa-chevron-left"></i></button>
+                    <div class="calendar-nav-center">
+                        <h3 id="cal-month-label"></h3>
+                        <button type="button" class="btn-text" id="cal-today-btn">Today</button>
+                    </div>
+                    <button type="button" class="btn-icon" id="cal-next-btn"><i
+                            class="fa-solid fa-chevron-right"></i></button>
+                </div>
+                <div class="calendar-legend">
+                    <span><i class="legend-dot draft"></i> Draft</span>
+                    <span><i class="legend-dot scheduled"></i> Scheduled</span>
+                    <span><i class="legend-dot completed"></i> Completed</span>
+                    <span><i class="legend-dot failed"></i> Failed</span>
+                </div>
+                <div class="calendar-weekdays">
+                    <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+                </div>
+                <div class="calendar-grid" id="calendar-grid"></div>
+                <div class="calendar-day-detail" id="calendar-day-detail" style="display:none;">
+                    <h4 id="cal-detail-date"></h4>
+                    <div id="cal-detail-posts" class="calendar-detail-posts"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification for web feedback -->
+    <div id="toast" class="toast-web">Message goes here.</div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

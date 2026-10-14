@@ -1,0 +1,6 @@
+*.env
+*db
+*.ps1
+*.bat
+*.pyc
+*.log
