@@ -5,9 +5,10 @@ from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 from datetime import datetime
 from typing import List, Optional
+from uuid import UUID
 
 from modules.posts.models import Post, StyleTemplate
-from modules.posts.schemas import PostCreate, StyleTemplateCreate
+from modules.posts.schemas import PostCreate, PostUpdate, StyleTemplateCreate
 from modules.posts.web_search import search_web
 from modules.ai.engine import ai_engine
 from modules.ai import prompts
@@ -55,23 +56,42 @@ def clean_json_content(content: str) -> str:
 
 class PostService:
     @staticmethod
-    def get_post(db: Session, post_id: int) -> Optional[Post]:
-        return db.query(Post).filter(Post.id == post_id).first()
+    def get_post(db: Session, post_id: int, user_id: UUID) -> Optional[Post]:
+        return db.query(Post).filter(Post.id == post_id, Post.user_id == user_id).first()
 
     @staticmethod
-    def get_posts(db: Session, skip: int = 0, limit: int = 100) -> List[Post]:
-        return db.query(Post).order_by(Post.created_at.desc()).offset(skip).limit(limit).all()
+    def get_posts(db: Session, user_id: UUID, skip: int = 0, limit: int = 100) -> List[Post]:
+        return (
+            db.query(Post)
+            .filter(Post.user_id == user_id)
+            .order_by(Post.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
 
     @staticmethod
-    def create_post(db: Session, post_data: PostCreate) -> Post:
+    def create_post(db: Session, post_data: PostCreate, user_id: UUID) -> Post:
         web_sources_str = json.dumps(post_data.web_sources) if post_data.web_sources else None
+        style_template_id = post_data.style_template_id
+        if style_template_id is not None:
+            # Don't let a post reference another user's style template.
+            owned = db.query(StyleTemplate).filter(
+                StyleTemplate.id == style_template_id, StyleTemplate.user_id == user_id
+            ).first()
+            if not owned:
+                style_template_id = None
+
         db_post = Post(
+            user_id=user_id,
             title=post_data.title,
             type=post_data.type,
+            mode=post_data.mode,
             rough_draft=post_data.rough_draft,
+            additional_context=post_data.additional_context,
             web_sources=web_sources_str,
             auto_search_count=post_data.auto_search_count,
-            style_template_id=post_data.style_template_id,
+            style_template_id=style_template_id,
             status="scheduled" if post_data.scheduled_time else "draft",
             scheduled_time=post_data.scheduled_time
         )
@@ -81,8 +101,35 @@ class PostService:
         return db_post
 
     @staticmethod
-    def update_post_status(db: Session, post_id: int, status: str) -> Optional[Post]:
-        db_post = PostService.get_post(db, post_id)
+    def update_post(db: Session, post_id: int, user_id: UUID, update_data: PostUpdate) -> Optional[Post]:
+        """
+        Patches an existing draft's editable fields (used by Assist mode to save
+        iterative edits, but applies to any post).
+        """
+        db_post = PostService.get_post(db, post_id, user_id)
+        if not db_post:
+            return None
+
+        fields = update_data.model_dump(exclude_unset=True)
+        if "web_sources" in fields:
+            fields["web_sources"] = json.dumps(fields["web_sources"]) if fields["web_sources"] else None
+        if fields.get("style_template_id") is not None:
+            owned = db.query(StyleTemplate).filter(
+                StyleTemplate.id == fields["style_template_id"], StyleTemplate.user_id == user_id
+            ).first()
+            if not owned:
+                fields["style_template_id"] = None
+        for key, value in fields.items():
+            setattr(db_post, key, value)
+
+        db_post.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_post)
+        return db_post
+
+    @staticmethod
+    def update_post_status(db: Session, post_id: int, user_id: UUID, status: str) -> Optional[Post]:
+        db_post = PostService.get_post(db, post_id, user_id)
         if db_post:
             db_post.status = status
             db_post.updated_at = datetime.utcnow()
@@ -91,8 +138,8 @@ class PostService:
         return db_post
 
     @staticmethod
-    def delete_post(db: Session, post_id: int) -> bool:
-        db_post = PostService.get_post(db, post_id)
+    def delete_post(db: Session, post_id: int, user_id: UUID) -> bool:
+        db_post = PostService.get_post(db, post_id, user_id)
         if db_post:
             db.delete(db_post)
             db.commit()
@@ -100,16 +147,12 @@ class PostService:
         return False
 
     @staticmethod
-    async def generate_post_content(db: Session, post_id: int) -> Post:
+    async def _resolve_web_context(db: Session, db_post: Post) -> str:
         """
-        Gathers context (rough drafts, scraping URLs, style templates) and calls the AI engine.
-        Updates the post content and status.
+        Resolves manually provided + auto-searched web sources into scraped text.
+        Persists the combined URL list back onto the post so auto-fetched sources
+        remain visible and checkable after generation, not just used and discarded.
         """
-        db_post = PostService.get_post(db, post_id)
-        if not db_post:
-            raise ValueError(f"Post {post_id} not found")
-
-        # 1. Scraping web sources (manually provided + auto-fetched via web search)
         manual_urls = json.loads(db_post.web_sources) if db_post.web_sources else []
         manual_urls = [u.strip() for u in manual_urls if u.strip()]
 
@@ -122,21 +165,36 @@ class PostService:
 
         all_urls = manual_urls + search_urls
         scraped_texts = [await scrape_url(url) for url in all_urls]
-        web_content = "\n".join(scraped_texts)
 
-        # Persist auto-fetched sources alongside manual ones so they remain
-        # visible and checkable after generation.
         if search_urls:
             db_post.web_sources = json.dumps(all_urls)
 
-        # 2. Getting style template
-        style_content = ""
-        if db_post.style_template_id:
-            template = db.query(StyleTemplate).filter(StyleTemplate.id == db_post.style_template_id).first()
-            if template:
-                style_content = template.content
+        return "\n".join(scraped_texts)
 
-        # 3. Generating prompt & calling LLM based on type
+    @staticmethod
+    def _get_style_content(db: Session, db_post: Post) -> str:
+        if db_post.style_template_id:
+            template = db.query(StyleTemplate).filter(
+                StyleTemplate.id == db_post.style_template_id, StyleTemplate.user_id == db_post.user_id
+            ).first()
+            if template:
+                return template.content
+        return ""
+
+    @staticmethod
+    async def generate_post_content(db: Session, post_id: int, user_id: UUID) -> Post:
+        """
+        Gathers context (rough drafts, scraping URLs, style templates) and calls the AI engine.
+        Updates the post content and status.
+        """
+        db_post = PostService.get_post(db, post_id, user_id)
+        if not db_post:
+            raise ValueError(f"Post {post_id} not found")
+
+        web_content = await PostService._resolve_web_context(db, db_post)
+        style_content = PostService._get_style_content(db, db_post)
+
+        # Generating prompt & calling LLM based on type
         if db_post.type == "carousel":
             # For carousels we default to a structured output, say 5 slides if not specified.
             # We can parse the rough draft for slide requests if any.
@@ -151,6 +209,7 @@ class PostService:
                 title=db_post.title,
                 num_slides=num_slides,
                 rough_draft=db_post.rough_draft,
+                additional_context=db_post.additional_context,
                 web_sources_text=web_content,
                 style_template_content=style_content
             )
@@ -162,6 +221,7 @@ class PostService:
             user_prompt = prompts.build_post_user_prompt(
                 title=db_post.title,
                 rough_draft=db_post.rough_draft,
+                additional_context=db_post.additional_context,
                 web_sources_text=web_content,
                 style_template_content=style_content
             )
@@ -178,22 +238,17 @@ class PostService:
         return db_post
 
     @staticmethod
-    def refine_post_content(db: Session, post_id: int, instruction: str) -> Post:
+    def refine_post_content(db: Session, post_id: int, user_id: UUID, instruction: str) -> Post:
         """
         Refines already generated content based on feedback.
         """
-        db_post = PostService.get_post(db, post_id)
+        db_post = PostService.get_post(db, post_id, user_id)
         if not db_post:
             raise ValueError(f"Post {post_id} not found")
         if not db_post.content:
             raise ValueError(f"Post {post_id} has no generated content to refine")
 
-        # Get style context
-        style_content = ""
-        if db_post.style_template_id:
-            template = db.query(StyleTemplate).filter(StyleTemplate.id == db_post.style_template_id).first()
-            if template:
-                style_content = template.content
+        style_content = PostService._get_style_content(db, db_post)
 
         # Reconstruct the original request context for LLM memory
         original_prompt = f"Topic/Title: {db_post.title or 'N/A'}\nRough Draft: {db_post.rough_draft or 'N/A'}"
@@ -214,14 +269,43 @@ class PostService:
         db.refresh(db_post)
         return db_post
 
+    @staticmethod
+    async def assist_post(db: Session, post_id: int, user_id: UUID) -> Post:
+        """
+        Non-destructive editorial pass: fact-checks and suggests structure for the
+        user's own rough draft without ever overwriting it. Re-runnable as the
+        draft evolves; each run simply replaces the previous advisory result.
+        """
+        db_post = PostService.get_post(db, post_id, user_id)
+        if not db_post:
+            raise ValueError(f"Post {post_id} not found")
+
+        web_content = await PostService._resolve_web_context(db, db_post)
+        style_content = PostService._get_style_content(db, db_post)
+
+        user_prompt = prompts.build_assist_user_prompt(
+            title=db_post.title,
+            rough_draft=db_post.rough_draft,
+            additional_context=db_post.additional_context,
+            web_sources_text=web_content,
+            style_template_content=style_content
+        )
+        raw_result = ai_engine.generate(prompts.ASSIST_SYSTEM_PROMPT, user_prompt)
+        db_post.assist_result = clean_json_content(raw_result)
+        db_post.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_post)
+        return db_post
+
     # Style Templates CRUD
     @staticmethod
-    def get_style_templates(db: Session) -> List[StyleTemplate]:
-        return db.query(StyleTemplate).order_by(StyleTemplate.name).all()
+    def get_style_templates(db: Session, user_id: UUID) -> List[StyleTemplate]:
+        return db.query(StyleTemplate).filter(StyleTemplate.user_id == user_id).order_by(StyleTemplate.name).all()
 
     @staticmethod
-    def create_style_template(db: Session, template_data: StyleTemplateCreate) -> StyleTemplate:
+    def create_style_template(db: Session, template_data: StyleTemplateCreate, user_id: UUID) -> StyleTemplate:
         db_template = StyleTemplate(
+            user_id=user_id,
             name=template_data.name,
             content=template_data.content
         )
@@ -231,8 +315,10 @@ class PostService:
         return db_template
 
     @staticmethod
-    def delete_style_template(db: Session, template_id: int) -> bool:
-        db_template = db.query(StyleTemplate).filter(StyleTemplate.id == template_id).first()
+    def delete_style_template(db: Session, template_id: int, user_id: UUID) -> bool:
+        db_template = db.query(StyleTemplate).filter(
+            StyleTemplate.id == template_id, StyleTemplate.user_id == user_id
+        ).first()
         if db_template:
             db.delete(db_template)
             db.commit()

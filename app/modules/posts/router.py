@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from database.session import get_db
+from modules.auth.dependencies import require_approved_user
+from modules.auth.models import Profile
 from modules.posts.schemas import (
-    PostCreate, PostResponse, PostRefine, PostSchedule,
+    PostCreate, PostUpdate, PostResponse, PostRefine, PostSchedule,
     StyleTemplateCreate, StyleTemplateResponse
 )
 from modules.posts.service import PostService
@@ -27,16 +29,26 @@ def to_post_response(post) -> PostResponse:
             web_sources_list = json.loads(post.web_sources)
         except Exception:
             web_sources_list = [post.web_sources]
-            
+
+    assist_result = None
+    if post.assist_result:
+        try:
+            assist_result = json.loads(post.assist_result)
+        except Exception:
+            assist_result = None
+
     return PostResponse(
         id=post.id,
         title=post.title,
         type=post.type,
+        mode=post.mode,
         rough_draft=post.rough_draft,
+        additional_context=post.additional_context,
         web_sources=web_sources_list,
         auto_search_count=post.auto_search_count,
         style_template_id=post.style_template_id,
         content=post.content,
+        assist_result=assist_result,
         status=post.status,
         scheduled_time=post.scheduled_time,
         created_at=post.created_at,
@@ -46,53 +58,103 @@ def to_post_response(post) -> PostResponse:
 # --- Post Endpoints ---
 
 @router.get("/posts", response_model=List[PostResponse])
-def get_posts(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    posts = PostService.get_posts(db, skip=skip, limit=limit)
+def get_posts(
+    skip: int = 0, limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    posts = PostService.get_posts(db, user_id=current_user.id, skip=skip, limit=limit)
     return [to_post_response(p) for p in posts]
 
 @router.get("/posts/{post_id}", response_model=PostResponse)
-def get_post(post_id: int, db: Session = Depends(get_db)):
-    post = PostService.get_post(db, post_id)
+def get_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    post = PostService.get_post(db, post_id, current_user.id)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return to_post_response(post)
+
+@router.patch("/posts/{post_id}", response_model=PostResponse)
+def update_post(
+    post_id: int, update_data: PostUpdate,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    post = PostService.update_post(db, post_id, current_user.id, update_data)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     return to_post_response(post)
 
 @router.post("/posts", response_model=PostResponse, status_code=status.HTTP_201_CREATED)
-async def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
+async def create_post(
+    post_data: PostCreate,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
     try:
         # Create record in DB
-        post = PostService.create_post(db, post_data)
-        
+        post = PostService.create_post(db, post_data, current_user.id)
+
+        # Assist-mode drafts are never auto-generated; the user writes them and
+        # calls /assist explicitly whenever they want advisory feedback.
+        if post.mode == "assist":
+            return to_post_response(post)
+
         # If no scheduled time, generate immediately
         if not post.scheduled_time:
-            post = await PostService.generate_post_content(db, post.id)
+            post = await PostService.generate_post_content(db, post.id, current_user.id)
         else:
             # Register with APScheduler background job
             schedule_post_job(post.id, post.scheduled_time)
-            
+
         return to_post_response(post)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Generation failed: {str(ex) if 'ex' in locals() else str(e)}")
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
 @router.post("/posts/{post_id}/refine", response_model=PostResponse)
-def refine_post(post_id: int, refine_data: PostRefine, db: Session = Depends(get_db)):
+def refine_post(
+    post_id: int, refine_data: PostRefine,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
     try:
-        post = PostService.refine_post_content(db, post_id, refine_data.instruction)
+        post = PostService.refine_post_content(db, post_id, current_user.id, refine_data.instruction)
         return to_post_response(post)
     except ValueError as e:
         raise HTTPException(
-            status_code=404 if "not found" in str(e) else 400, 
+            status_code=404 if "not found" in str(e) else 400,
             detail=str(e)
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Refinement failed: {str(e)}")
 
-@router.post("/posts/{post_id}/regenerate", response_model=PostResponse)
-async def regenerate_post(post_id: int, db: Session = Depends(get_db)):
+@router.post("/posts/{post_id}/assist", response_model=PostResponse)
+async def assist_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
     try:
-        post = await PostService.generate_post_content(db, post_id)
+        post = await PostService.assist_post(db, post_id, current_user.id)
+        return to_post_response(post)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Assist pass failed: {str(e)}")
+
+@router.post("/posts/{post_id}/regenerate", response_model=PostResponse)
+async def regenerate_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    try:
+        post = await PostService.generate_post_content(db, post_id, current_user.id)
         return to_post_response(post)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -100,8 +162,12 @@ async def regenerate_post(post_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Regeneration failed: {str(e)}")
 
 @router.get("/posts/{post_id}/carousel.pdf")
-def download_carousel_pdf(post_id: int, db: Session = Depends(get_db)):
-    post = PostService.get_post(db, post_id)
+def download_carousel_pdf(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    post = PostService.get_post(db, post_id, current_user.id)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     if post.type != "carousel":
@@ -127,25 +193,33 @@ def download_carousel_pdf(post_id: int, db: Session = Depends(get_db)):
     )
 
 @router.post("/posts/{post_id}/schedule", response_model=PostResponse)
-def schedule_post(post_id: int, schedule_data: PostSchedule, db: Session = Depends(get_db)):
-    post = PostService.get_post(db, post_id)
+def schedule_post(
+    post_id: int, schedule_data: PostSchedule,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    post = PostService.get_post(db, post_id, current_user.id)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
-    
+
     # Update to scheduled
     post.scheduled_time = schedule_data.scheduled_time
     post.status = "scheduled"
     db.commit()
     db.refresh(post)
-    
+
     # Schedule background job
     schedule_post_job(post.id, post.scheduled_time)
-    
+
     return to_post_response(post)
 
 @router.delete("/posts/{post_id}")
-def delete_post(post_id: int, db: Session = Depends(get_db)):
-    success = PostService.delete_post(db, post_id)
+def delete_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    success = PostService.delete_post(db, post_id, current_user.id)
     if not success:
         raise HTTPException(status_code=404, detail="Post not found")
     return {"detail": "Post deleted successfully"}
@@ -153,16 +227,27 @@ def delete_post(post_id: int, db: Session = Depends(get_db)):
 # --- Style Template Endpoints ---
 
 @router.get("/style-templates", response_model=List[StyleTemplateResponse])
-def get_style_templates(db: Session = Depends(get_db)):
-    return PostService.get_style_templates(db)
+def get_style_templates(
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    return PostService.get_style_templates(db, current_user.id)
 
 @router.post("/style-templates", response_model=StyleTemplateResponse, status_code=status.HTTP_201_CREATED)
-def create_style_template(template_data: StyleTemplateCreate, db: Session = Depends(get_db)):
-    return PostService.create_style_template(db, template_data)
+def create_style_template(
+    template_data: StyleTemplateCreate,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    return PostService.create_style_template(db, template_data, current_user.id)
 
 @router.delete("/style-templates/{template_id}")
-def delete_style_template(template_id: int, db: Session = Depends(get_db)):
-    success = PostService.delete_style_template(db, template_id)
+def delete_style_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    current_user: Profile = Depends(require_approved_user),
+):
+    success = PostService.delete_style_template(db, template_id, current_user.id)
     if not success:
         raise HTTPException(status_code=404, detail="Style template not found")
     return {"detail": "Style template deleted successfully"}

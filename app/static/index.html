@@ -20,6 +20,36 @@
 <body>
     <div class="glow-bg"></div>
 
+    <!-- LOGIN / INVITE GATE: shown until the user has signed in with Google
+         AND entered the shared invite passphrase. -->
+    <div id="login-view" class="login-view">
+        <div class="card glass login-card">
+            <div class="logo"><span class="gradient-text"><i class="fa-brands fa-linkedin"></i> PostStudio</span></div>
+
+            <div id="login-signin-step">
+                <p class="section-desc">Sign in to create and manage your LinkedIn content.</p>
+                <button type="button" id="google-signin-btn" class="btn btn-primary">
+                    <i class="fa-brands fa-google"></i> Sign in with Google
+                </button>
+            </div>
+
+            <div id="login-passphrase-step" style="display:none;">
+                <p class="section-desc">Almost there — enter the invite passphrase to activate your account.</p>
+                <form id="passphrase-form">
+                    <div class="form-group">
+                        <input type="password" id="passphrase-input" placeholder="Invite passphrase" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <span class="btn-text-content">Unlock Access</span>
+                        <div class="spinner" id="passphrase-spinner" style="display:none;"></div>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN APP SHELL: hidden until signed in and approved -->
+    <div id="app-shell" style="display:none;">
     <header class="app-header">
         <div class="logo">
             <span class="gradient-text"><i class="fa-brands fa-linkedin"></i> PostStudio</span>
@@ -30,10 +60,26 @@
             </button>
             <span id="api-status" class="status-badge connected"><i class="fa-solid fa-circle-check"></i> System
                 Online</span>
+            <button id="logout-btn" class="btn-theme-toggle" aria-label="Sign out">
+                <i class="fa-solid fa-right-from-bracket"></i>
+            </button>
         </div>
     </header>
 
-    <main class="app-container">
+    <nav class="tab-bar" id="tab-bar">
+        <button type="button" class="tab-btn active" data-view="create">
+            <i class="fa-solid fa-wand-magic-sparkles"></i><span>Create</span>
+        </button>
+        <button type="button" class="tab-btn" data-view="assist">
+            <i class="fa-solid fa-pen-ruler"></i><span>Assist</span>
+        </button>
+        <button type="button" class="tab-btn" data-view="history">
+            <i class="fa-solid fa-clock-rotate-left"></i><span>History</span>
+        </button>
+    </nav>
+
+    <main class="app-main">
+    <section id="view-create" class="app-view active app-container">
         <!-- LEFT: Generation Inputs -->
         <section class="panel-left">
             <div class="card glass">
@@ -80,6 +126,12 @@
                                 <input type="number" id="auto-search-count" min="1" max="20" value="7">
                             </div>
                         </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="additional-context">Additional Context / Notes (Optional)</label>
+                        <textarea id="additional-context" rows="3"
+                            placeholder="Paste personal notes or content from a source that isn't a public URL (e.g. a paywalled article, your own meeting notes)..."></textarea>
                     </div>
 
                     <div class="form-group">
@@ -211,20 +263,148 @@
                     </form>
                 </div>
             </div>
+        </section>
+    </section>
 
-            <!-- History Feed / Saved Posts -->
-            <div class="card glass history-card">
+    <!-- ASSIST VIEW: non-destructive editorial assistance over the user's own draft -->
+    <section id="view-assist" class="app-view app-container">
+        <section class="panel-left">
+            <div class="card glass">
+                <h2><i class="fa-solid fa-pen-ruler purple-glow"></i> Your Draft</h2>
+                <form id="assist-form">
+                    <div class="form-group">
+                        <label for="assist-title">Topic or Article Title</label>
+                        <input type="text" id="assist-title" placeholder="e.g. What I learned shipping my first AI agent">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="assist-draft">Your Rough Draft</label>
+                        <textarea id="assist-draft" rows="12"
+                            placeholder="Write or paste your draft here, in your own words. Nothing here is ever rewritten for you."></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Web Reference Sources (Optional)</label>
+                        <div id="assist-url-container">
+                            <div class="url-input-row">
+                                <input type="url" class="source-url" placeholder="https://example.com/article">
+                                <button type="button" class="btn-icon remove-url" style="display:none;"><i
+                                        class="fa-solid fa-trash"></i></button>
+                            </div>
+                        </div>
+                        <button type="button" id="assist-add-url-btn" class="btn-text"><i class="fa-solid fa-plus"></i>
+                            Add Web Source</button>
+
+                        <div class="auto-search-row">
+                            <label class="checkbox-label" for="assist-auto-search-toggle">
+                                <input type="checkbox" id="assist-auto-search-toggle">
+                                <span>Auto-fetch sources via web search</span>
+                            </label>
+                            <div class="form-group" id="assist-auto-search-count-group" style="display:none;">
+                                <label for="assist-auto-search-count">Number of sources to fetch</label>
+                                <input type="number" id="assist-auto-search-count" min="1" max="20" value="7">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="assist-additional-context">Additional Context / Notes (Optional)</label>
+                        <textarea id="assist-additional-context" rows="3"
+                            placeholder="Paste personal notes or content from a source that isn't a public URL (e.g. a paywalled article, your own meeting notes)..."></textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="assist-style-select">Writing Style Template</label>
+                            <select id="assist-style-select">
+                                <option value="">No template</option>
+                            </select>
+                        </div>
+                        <div class="form-group-btn">
+                            <button type="button" id="assist-manage-styles-btn" class="btn btn-secondary"><i
+                                    class="fa-solid fa-sliders"></i> Styles</button>
+                        </div>
+                    </div>
+
+                    <div class="btn-group">
+                        <button type="button" id="assist-new-btn" class="btn btn-secondary">
+                            <i class="fa-solid fa-file-circle-plus"></i> New Draft
+                        </button>
+                        <button type="button" id="assist-save-btn" class="btn btn-secondary">
+                            <i class="fa-solid fa-floppy-disk"></i> Save Draft
+                        </button>
+                        <button type="button" id="assist-run-btn" class="btn btn-primary">
+                            <span class="btn-text-content"><i class="fa-solid fa-magnifying-glass"></i> Get AI Assist</span>
+                            <div class="spinner" id="assist-spinner" style="display: none;"></div>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <section class="panel-right">
+            <div class="card glass preview-card">
                 <div class="preview-header">
-                    <h2><i class="fa-solid fa-clock-rotate-left"></i> Content History</h2>
-                    <button type="button" id="open-calendar-btn" class="btn btn-secondary btn-sm"><i
-                            class="fa-solid fa-calendar-days"></i> Calendar View</button>
+                    <h2><i class="fa-regular fa-lightbulb"></i> Editorial Feedback</h2>
                 </div>
-                <div class="history-list" id="history-list">
-                    <p class="no-history">No posts generated yet.</p>
-                    <!-- Dynamically populated -->
+
+                <div id="assist-placeholder" class="preview-placeholder">
+                    <i class="fa-solid fa-pen-nib"></i>
+                    <p>Fact-checks, a suggested structure, and a fill-in template will appear here.</p>
+                    <span class="hint">Write a draft on the left and click "Get AI Assist". Your draft is never overwritten.</span>
+                </div>
+
+                <div id="assist-results" style="display: none;">
+                    <div class="assist-section">
+                        <h3><i class="fa-solid fa-check-double"></i> Fact-Check</h3>
+                        <ul class="assist-fact-check-list" id="assist-fact-check-list"></ul>
+                    </div>
+
+                    <hr class="divider">
+
+                    <div class="assist-section">
+                        <div class="preview-header">
+                            <h3><i class="fa-solid fa-list-check"></i> Suggested Structure</h3>
+                            <button type="button" class="btn btn-secondary btn-sm copy-section-btn" data-target="assist-structured-draft"><i class="fa-regular fa-copy"></i> Copy</button>
+                        </div>
+                        <div class="assist-structured-draft" id="assist-structured-draft"></div>
+                    </div>
+
+                    <hr class="divider">
+
+                    <div class="assist-section">
+                        <h3><i class="fa-solid fa-list-ul"></i> Suggestions</h3>
+                        <ul class="assist-suggestions-list" id="assist-suggestions-list"></ul>
+                    </div>
+
+                    <hr class="divider">
+
+                    <div class="assist-section">
+                        <div class="preview-header">
+                            <h3><i class="fa-solid fa-table-list"></i> Fill-in Template</h3>
+                            <button type="button" class="btn btn-secondary btn-sm copy-section-btn" data-target="assist-template"><i class="fa-regular fa-copy"></i> Copy</button>
+                        </div>
+                        <pre class="assist-template" id="assist-template"></pre>
+                    </div>
                 </div>
             </div>
         </section>
+    </section>
+
+    <!-- HISTORY VIEW -->
+    <section id="view-history" class="app-view">
+        <div class="card glass history-card">
+            <div class="preview-header">
+                <h2><i class="fa-solid fa-clock-rotate-left"></i> Content History</h2>
+                <button type="button" id="open-calendar-btn" class="btn btn-secondary btn-sm"><i
+                        class="fa-solid fa-calendar-days"></i> Calendar View</button>
+            </div>
+            <div class="history-list" id="history-list">
+                <p class="no-history">No posts generated yet.</p>
+                <!-- Dynamically populated -->
+            </div>
+        </div>
+    </section>
     </main>
 
     <!-- MODAL: Style Template Manager -->
@@ -302,7 +482,9 @@
 
     <!-- Toast Notification for web feedback -->
     <div id="toast" class="toast-web">Message goes here.</div>
+    </div> <!-- /#app-shell -->
 
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
     <script src="/static/app.js"></script>
 </body>
 

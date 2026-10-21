@@ -3,11 +3,13 @@ const API_BASE = window.location.origin.includes(':8000') ? '' : 'http://localho
 
 // UI Elements & State
 let activePostId = null;
+let activeAssistPostId = null;
 let carouselSlides = [];
 let activeSlideIndex = 0;
 let allPosts = [];
 let calendarDate = new Date();
 let selectedCalendarKey = null;
+let supabaseClient = null;
 
 const el = {
     // Form & Inputs
@@ -22,6 +24,7 @@ const el = {
     autoSearchCountGroup: document.getElementById('auto-search-count-group'),
     autoSearchCount: document.getElementById('auto-search-count'),
     roughDraft: document.getElementById('rough-draft'),
+    additionalContext: document.getElementById('additional-context'),
     styleSelect: document.getElementById('style-select'),
     scheduleTime: document.getElementById('schedule-time'),
     generateBtn: document.getElementById('generate-btn'),
@@ -77,8 +80,45 @@ const el = {
     templateContent: document.getElementById('template-content'),
     templatesList: document.getElementById('templates-list'),
 
+    // Tab Navigation
+    tabBar: document.getElementById('tab-bar'),
+
+    // Assist View
+    assistForm: document.getElementById('assist-form'),
+    assistTitle: document.getElementById('assist-title'),
+    assistDraft: document.getElementById('assist-draft'),
+    assistAdditionalContext: document.getElementById('assist-additional-context'),
+    assistUrlContainer: document.getElementById('assist-url-container'),
+    assistAddUrlBtn: document.getElementById('assist-add-url-btn'),
+    assistAutoSearchToggle: document.getElementById('assist-auto-search-toggle'),
+    assistAutoSearchCountGroup: document.getElementById('assist-auto-search-count-group'),
+    assistAutoSearchCount: document.getElementById('assist-auto-search-count'),
+    assistStyleSelect: document.getElementById('assist-style-select'),
+    assistManageStylesBtn: document.getElementById('assist-manage-styles-btn'),
+    assistNewBtn: document.getElementById('assist-new-btn'),
+    assistSaveBtn: document.getElementById('assist-save-btn'),
+    assistRunBtn: document.getElementById('assist-run-btn'),
+    assistSpinner: document.getElementById('assist-spinner'),
+    assistPlaceholder: document.getElementById('assist-placeholder'),
+    assistResults: document.getElementById('assist-results'),
+    assistFactCheckList: document.getElementById('assist-fact-check-list'),
+    assistStructuredDraft: document.getElementById('assist-structured-draft'),
+    assistSuggestionsList: document.getElementById('assist-suggestions-list'),
+    assistTemplate: document.getElementById('assist-template'),
+
     // Toast
-    toast: document.getElementById('toast')
+    toast: document.getElementById('toast'),
+
+    // Auth / Login Gate
+    loginView: document.getElementById('login-view'),
+    appShell: document.getElementById('app-shell'),
+    loginSigninStep: document.getElementById('login-signin-step'),
+    loginPassphraseStep: document.getElementById('login-passphrase-step'),
+    googleSigninBtn: document.getElementById('google-signin-btn'),
+    passphraseForm: document.getElementById('passphrase-form'),
+    passphraseInput: document.getElementById('passphrase-input'),
+    passphraseSpinner: document.getElementById('passphrase-spinner'),
+    logoutBtn: document.getElementById('logout-btn')
 };
 
 // --- Helper Functions ---
@@ -91,6 +131,23 @@ function showToast(message, type = 'info') {
     }, 4000);
 }
 
+// --- Auth-aware fetch ---
+
+async function getAccessToken() {
+    if (!supabaseClient) return null;
+    const { data } = await supabaseClient.auth.getSession();
+    return data?.session?.access_token || null;
+}
+
+// Wraps fetch() with the current Supabase access token attached, since every
+// /api/* route (other than /api/config) now requires authentication.
+async function apiFetch(path, options = {}) {
+    const token = await getAccessToken();
+    const headers = { ...(options.headers || {}) };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetch(`${API_BASE}${path}`, { ...options, headers });
+}
+
 function escapeHtml(text) {
     return text
         .replace(/&/g, "&amp;")
@@ -98,6 +155,20 @@ function escapeHtml(text) {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
 }
+
+// --- Tab Navigation ---
+
+function switchView(viewName) {
+    document.querySelectorAll('.app-view').forEach(v => v.classList.remove('active'));
+    const target = document.getElementById(`view-${viewName}`);
+    if (target) target.classList.add('active');
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.view === viewName));
+}
+
+el.tabBar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (btn) switchView(btn.dataset.view);
+});
 
 function formatMarkdown(text) {
     if (!text) return "";
@@ -122,7 +193,7 @@ function formatDisplayDate(dateStr) {
 async function checkSystemStatus() {
     const apiStatus = document.getElementById('api-status');
     try {
-        const res = await fetch(`${API_BASE}/api/style-templates`);
+        const res = await apiFetch(`/api/style-templates`);
         if (res.ok) {
             apiStatus.innerHTML = '<i class="fa-solid fa-circle-check"></i> System Online';
             apiStatus.className = 'status-badge connected';
@@ -138,24 +209,30 @@ async function checkSystemStatus() {
 
 // --- Dynamic Form URLs ---
 
-el.addUrlBtn.addEventListener('click', () => {
+function addUrlRow(container) {
     const row = document.createElement('div');
     row.className = 'url-input-row';
     row.innerHTML = `
         <input type="url" class="source-url" placeholder="https://example.com/article">
         <button type="button" class="btn-icon remove-url"><i class="fa-solid fa-trash"></i></button>
     `;
-    el.urlContainer.appendChild(row);
-    
+    container.appendChild(row);
+
     // Bind remove button
     row.querySelector('.remove-url').addEventListener('click', () => {
         row.remove();
     });
-});
+}
+
+el.addUrlBtn.addEventListener('click', () => addUrlRow(el.urlContainer));
+el.assistAddUrlBtn.addEventListener('click', () => addUrlRow(el.assistUrlContainer));
 
 // Show/hide auto-search source count based on checkbox
 el.autoSearchToggle.addEventListener('change', (e) => {
     el.autoSearchCountGroup.style.display = e.target.checked ? 'block' : 'none';
+});
+el.assistAutoSearchToggle.addEventListener('change', (e) => {
+    el.assistAutoSearchCountGroup.style.display = e.target.checked ? 'block' : 'none';
 });
 
 // Show/hide slides input based on post type select
@@ -171,16 +248,18 @@ el.postType.addEventListener('change', (e) => {
 
 async function fetchStyles() {
     try {
-        const res = await fetch(`${API_BASE}/api/style-templates`);
+        const res = await apiFetch(`/api/style-templates`);
         const templates = await res.json();
         
-        // Populate dropdown
+        // Populate dropdowns (Create + Assist both offer the same style templates)
         el.styleSelect.innerHTML = '<option value="">No template (Standard LinkedIn Copywriter)</option>';
+        el.assistStyleSelect.innerHTML = '<option value="">No template</option>';
         templates.forEach(t => {
             const opt = document.createElement('option');
             opt.value = t.id;
             opt.textContent = t.name;
             el.styleSelect.appendChild(opt);
+            el.assistStyleSelect.appendChild(opt.cloneNode(true));
         });
 
         // Populate modal list
@@ -215,7 +294,7 @@ async function fetchStyles() {
 
 async function createStyleTemplate(name, content) {
     try {
-        const res = await fetch(`${API_BASE}/api/style-templates`, {
+        const res = await apiFetch(`/api/style-templates`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, content })
@@ -236,7 +315,7 @@ async function createStyleTemplate(name, content) {
 
 async function deleteStyleTemplate(id) {
     try {
-        const res = await fetch(`${API_BASE}/api/style-templates/${id}`, { method: 'DELETE' });
+        const res = await apiFetch(`/api/style-templates/${id}`, { method: 'DELETE' });
         if (res.ok) {
             showToast("Template deleted", "success");
             await fetchStyles();
@@ -250,6 +329,7 @@ async function deleteStyleTemplate(id) {
 
 // Modal controls
 el.manageStylesBtn.addEventListener('click', () => el.stylesModal.classList.add('active'));
+el.assistManageStylesBtn.addEventListener('click', () => el.stylesModal.classList.add('active'));
 el.closeModalBtn.addEventListener('click', () => el.stylesModal.classList.remove('active'));
 el.stylesModal.addEventListener('click', (e) => {
     if (e.target === el.stylesModal) el.stylesModal.classList.remove('active');
@@ -264,7 +344,7 @@ el.templateForm.addEventListener('submit', async (e) => {
 
 async function fetchHistory() {
     try {
-        const res = await fetch(`${API_BASE}/api/posts`);
+        const res = await apiFetch(`/api/posts`);
         const posts = await res.json();
         allPosts = posts;
 
@@ -301,7 +381,7 @@ async function fetchHistory() {
 
             // Click metadata to load
             item.querySelector('.history-meta').addEventListener('click', () => {
-                loadPostToPreview(p);
+                openPostFromHistory(p);
             });
 
             // Click delete
@@ -321,7 +401,7 @@ async function fetchHistory() {
 
 async function deletePost(id) {
     try {
-        const res = await fetch(`${API_BASE}/api/posts/${id}`, { method: 'DELETE' });
+        const res = await apiFetch(`/api/posts/${id}`, { method: 'DELETE' });
         if (res.ok) {
             showToast("Post deleted successfully", "success");
             if (activePostId === id) {
@@ -435,7 +515,7 @@ function selectCalendarDay(key, dateObj, dayPosts) {
             </div>
         `;
         item.querySelector('.history-meta').addEventListener('click', () => {
-            loadPostToPreview(p);
+            openPostFromHistory(p);
             el.calendarModal.classList.remove('active');
         });
         el.calDetailPosts.appendChild(item);
@@ -564,6 +644,202 @@ function resetPreview() {
     el.sourcesList.innerHTML = '';
 }
 
+// Dispatches a history item to whichever tab can display it, since Assist-mode
+// drafts (advisory, non-destructive) and Generate-mode posts render completely differently.
+function openPostFromHistory(p) {
+    if (p.mode === 'assist') {
+        loadAssistPost(p);
+        switchView('assist');
+    } else {
+        loadPostToPreview(p);
+        switchView('create');
+    }
+}
+
+// --- Assist Mode (non-destructive editorial assistance) ---
+
+function resetAssistView() {
+    activeAssistPostId = null;
+    el.assistTitle.value = '';
+    el.assistDraft.value = '';
+    el.assistAdditionalContext.value = '';
+    el.assistUrlContainer.innerHTML = `
+        <div class="url-input-row">
+            <input type="url" class="source-url" placeholder="https://example.com/article">
+            <button type="button" class="btn-icon remove-url" style="display:none;"><i class="fa-solid fa-trash"></i></button>
+        </div>
+    `;
+    el.assistAutoSearchToggle.checked = false;
+    el.assistAutoSearchCountGroup.style.display = 'none';
+    el.assistStyleSelect.value = '';
+    el.assistPlaceholder.style.display = 'block';
+    el.assistResults.style.display = 'none';
+}
+
+function loadAssistPost(post) {
+    activeAssistPostId = post.id;
+    el.assistTitle.value = post.title || '';
+    el.assistDraft.value = post.rough_draft || '';
+    el.assistAdditionalContext.value = post.additional_context || '';
+    el.assistStyleSelect.value = post.style_template_id || '';
+    el.assistAutoSearchToggle.checked = !!post.auto_search_count;
+    el.assistAutoSearchCountGroup.style.display = post.auto_search_count ? 'block' : 'none';
+    if (post.auto_search_count) el.assistAutoSearchCount.value = post.auto_search_count;
+
+    const urls = post.web_sources || [];
+    el.assistUrlContainer.innerHTML = '';
+    if (urls.length === 0) {
+        addUrlRow(el.assistUrlContainer);
+    } else {
+        urls.forEach(url => {
+            addUrlRow(el.assistUrlContainer);
+            el.assistUrlContainer.lastElementChild.querySelector('.source-url').value = url;
+        });
+    }
+
+    if (post.assist_result) {
+        renderAssistResult(post.assist_result);
+    } else {
+        el.assistPlaceholder.style.display = 'block';
+        el.assistResults.style.display = 'none';
+    }
+}
+
+function renderAssistResult(result) {
+    el.assistPlaceholder.style.display = 'none';
+    el.assistResults.style.display = 'block';
+
+    const verdictIcon = {
+        supported: 'fa-circle-check',
+        unsupported: 'fa-circle-xmark',
+        conflicting: 'fa-triangle-exclamation',
+        unverified: 'fa-circle-question'
+    };
+    el.assistFactCheckList.innerHTML = (result.fact_check || []).map(fc => `
+        <li class="fact-check-item verdict-${fc.verdict}">
+            <i class="fa-solid ${verdictIcon[fc.verdict] || 'fa-circle-question'}"></i>
+            <div>
+                <p class="fact-check-claim">${escapeHtml(fc.claim)}</p>
+                <p class="fact-check-note">${escapeHtml(fc.note)}</p>
+                ${fc.source ? (/^https?:\/\//i.test(fc.source)
+                    ? `<a href="${escapeHtml(fc.source)}" target="_blank" rel="noopener noreferrer">${escapeHtml(fc.source)}</a>`
+                    : `<span class="fact-check-source-label">${escapeHtml(fc.source)}</span>`) : ''}
+            </div>
+        </li>
+    `).join('') || '<li class="no-history">No factual claims identified.</li>';
+
+    el.assistStructuredDraft.innerHTML = formatMarkdown(result.structured_draft || '');
+
+    el.assistSuggestionsList.innerHTML = (result.suggestions || []).map(s => `
+        <li class="suggestion-item suggestion-${s.type}"><span class="suggestion-type">${escapeHtml(s.type)}</span> ${escapeHtml(s.detail)}</li>
+    `).join('') || '<li class="no-history">No suggestions.</li>';
+
+    el.assistTemplate.textContent = result.template || '';
+}
+
+function collectAssistPayload() {
+    const urls = Array.from(el.assistUrlContainer.querySelectorAll('.source-url'))
+        .map(input => input.value.trim())
+        .filter(url => url !== "");
+
+    return {
+        title: el.assistTitle.value.trim() || null,
+        rough_draft: el.assistDraft.value.trim() || null,
+        additional_context: el.assistAdditionalContext.value.trim() || null,
+        web_sources: urls.length > 0 ? urls : null,
+        auto_search_count: el.assistAutoSearchToggle.checked ? parseInt(el.assistAutoSearchCount.value) : null,
+        style_template_id: el.assistStyleSelect.value ? parseInt(el.assistStyleSelect.value) : null
+    };
+}
+
+// Creates the assist-mode draft on first save, then patches it in place afterward.
+async function saveAssistDraft() {
+    const payload = collectAssistPayload();
+    try {
+        let res;
+        if (activeAssistPostId) {
+            res = await apiFetch(`/api/posts/${activeAssistPostId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        } else {
+            res = await apiFetch(`/api/posts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...payload, type: 'post', mode: 'assist' })
+            });
+        }
+        if (res.ok) {
+            const post = await res.json();
+            activeAssistPostId = post.id;
+            await fetchHistory();
+            return post;
+        }
+        const errData = await res.json();
+        showToast(errData.detail || "Failed to save draft", "error");
+    } catch (err) {
+        showToast("Error communicating with backend server", "error");
+    }
+    return null;
+}
+
+el.assistNewBtn.addEventListener('click', () => {
+    resetAssistView();
+    showToast("Started a new draft", "info");
+});
+
+el.assistSaveBtn.addEventListener('click', async () => {
+    const post = await saveAssistDraft();
+    if (post) showToast("Draft saved", "success");
+});
+
+el.assistRunBtn.addEventListener('click', async () => {
+    if (!el.assistDraft.value.trim()) {
+        showToast("Write a draft first", "error");
+        return;
+    }
+
+    el.assistRunBtn.disabled = true;
+    el.assistSpinner.style.display = 'inline-block';
+    el.assistRunBtn.querySelector('.btn-text-content').style.opacity = '0.5';
+
+    try {
+        const saved = await saveAssistDraft();
+        if (!saved) return;
+
+        const res = await apiFetch(`/api/posts/${activeAssistPostId}/assist`, { method: 'POST' });
+        if (res.ok) {
+            const post = await res.json();
+            renderAssistResult(post.assist_result);
+            await fetchHistory();
+            showToast("Editorial feedback ready", "success");
+        } else {
+            const errData = await res.json();
+            showToast(errData.detail || "Failed to get AI assist", "error");
+        }
+    } catch (err) {
+        showToast("Error communicating with backend server", "error");
+    } finally {
+        el.assistRunBtn.disabled = false;
+        el.assistSpinner.style.display = 'none';
+        el.assistRunBtn.querySelector('.btn-text-content').style.opacity = '1';
+    }
+});
+
+// Generic copy-to-clipboard for any advisory section (Suggested Structure, Template)
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.copy-section-btn');
+    if (!btn) return;
+    const target = document.getElementById(btn.dataset.target);
+    if (!target) return;
+    navigator.clipboard.writeText(target.innerText).then(() => {
+        showToast("Copied to clipboard!", "success");
+    }).catch(() => {
+        showToast("Failed to copy", "error");
+    });
+});
+
 // Form Submission (Create and Generate Post)
 el.generatorForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -572,9 +848,10 @@ el.generatorForm.addEventListener('submit', async (e) => {
     const title = el.postTitle.value.trim();
     const type = el.postType.value;
     const rough_draft = el.roughDraft.value.trim() || null;
+    const additional_context = el.additionalContext.value.trim() || null;
     
     // Extract Web Sources list
-    const urls = Array.from(document.querySelectorAll('.source-url'))
+    const urls = Array.from(el.urlContainer.querySelectorAll('.source-url'))
         .map(input => input.value.trim())
         .filter(url => url !== "");
     
@@ -599,13 +876,14 @@ el.generatorForm.addEventListener('submit', async (e) => {
             title,
             type,
             rough_draft,
+            additional_context,
             web_sources: urls.length > 0 ? urls : null,
             auto_search_count,
             style_template_id,
             scheduled_time
         };
 
-        const res = await fetch(`${API_BASE}/api/posts`, {
+        const res = await apiFetch(`/api/posts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -657,7 +935,7 @@ el.refinementForm.addEventListener('submit', async (e) => {
     el.refineBtn.querySelector('.btn-text-content').style.opacity = '0.5';
 
     try {
-        const res = await fetch(`${API_BASE}/api/posts/${activePostId}/refine`, {
+        const res = await apiFetch(`/api/posts/${activePostId}/refine`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ instruction })
@@ -706,10 +984,24 @@ el.copyBtn.addEventListener('click', () => {
     });
 });
 
-// Download rendered carousel slides as a LinkedIn-ready PDF
-el.downloadPdfBtn.addEventListener('click', () => {
+// Download rendered carousel slides as a LinkedIn-ready PDF.
+// Can't use window.open() directly since the endpoint now requires an
+// Authorization header a plain navigation can't carry - fetch the bytes
+// ourselves and trigger the download from a blob URL instead.
+el.downloadPdfBtn.addEventListener('click', async () => {
     if (!activePostId) return;
-    window.open(`${API_BASE}/api/posts/${activePostId}/carousel.pdf`, '_blank');
+    const res = await apiFetch(`/api/posts/${activePostId}/carousel.pdf`);
+    if (!res.ok) {
+        showToast("Failed to download PDF", "error");
+        return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `carousel_${activePostId}.pdf`;
+    link.click();
+    URL.revokeObjectURL(url);
 });
 
 // --- Theme Toggle Management ---
@@ -740,11 +1032,139 @@ function initTheme() {
     });
 }
 
+// --- Auth / Login Gate ---
+
+async function initSupabase() {
+    try {
+        const res = await fetch(`${API_BASE}/api/config`);
+        const config = await res.json();
+        if (!config.supabase_url || !config.supabase_anon_key) {
+            showToast("Supabase is not configured on the server yet", "error");
+            return null;
+        }
+        return window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
+    } catch (err) {
+        showToast("Error communicating with backend server", "error");
+        return null;
+    }
+}
+
+function showLoginView() {
+    el.appShell.style.display = 'none';
+    el.loginView.style.display = 'flex';
+    el.loginSigninStep.style.display = 'block';
+    el.loginPassphraseStep.style.display = 'none';
+}
+
+function showPassphraseStep() {
+    el.loginView.style.display = 'flex';
+    el.appShell.style.display = 'none';
+    el.loginSigninStep.style.display = 'none';
+    el.loginPassphraseStep.style.display = 'block';
+}
+
+// Loading posts/styles/history is idempotent but no need to repeat it if
+// onAuthStateChange and the initial session check both resolve to a signed-in,
+// approved user around the same time.
+let appShellLoaded = false;
+async function showAppShell() {
+    el.loginView.style.display = 'none';
+    el.appShell.style.display = 'block';
+    if (appShellLoaded) return;
+    appShellLoaded = true;
+    await checkSystemStatus();
+    await fetchStyles();
+    await fetchHistory();
+}
+
+// Checks the signed-in user's invite-passphrase approval status and shows the right view.
+async function handleAuthenticatedSession() {
+    const res = await apiFetch('/api/auth/me');
+    if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+            const errData = await res.json();
+            if (errData.detail) detail = `${detail}: ${errData.detail}`;
+        } catch (_) { /* non-JSON error body */ }
+        console.error('/api/auth/me failed:', detail);
+        showToast(`Sign-in failed (${detail})`, "error");
+        showLoginView();
+        return;
+    }
+    const profile = await res.json();
+    if (profile.is_approved) {
+        await showAppShell();
+    } else {
+        showPassphraseStep();
+    }
+}
+
+el.googleSigninBtn.addEventListener('click', async () => {
+    if (!supabaseClient) return;
+    await supabaseClient.auth.signInWithOAuth({ provider: 'google' });
+});
+
+el.passphraseForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const passphrase = el.passphraseInput.value.trim();
+    if (!passphrase) return;
+
+    const submitBtn = el.passphraseForm.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    el.passphraseSpinner.style.display = 'inline-block';
+
+    try {
+        const res = await apiFetch('/api/auth/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ passphrase })
+        });
+        if (res.ok) {
+            showToast("Access granted!", "success");
+            await showAppShell();
+        } else {
+            const errData = await res.json();
+            showToast(errData.detail || "Incorrect passphrase", "error");
+        }
+    } catch (err) {
+        showToast("Error communicating with backend server", "error");
+    } finally {
+        submitBtn.disabled = false;
+        el.passphraseSpinner.style.display = 'none';
+    }
+});
+
+el.logoutBtn.addEventListener('click', async () => {
+    if (supabaseClient) await supabaseClient.auth.signOut();
+    appShellLoaded = false;
+    el.passphraseInput.value = '';
+    showLoginView();
+});
+
 // --- Startup Initialization ---
 
 window.addEventListener('DOMContentLoaded', async () => {
     initTheme();
-    await checkSystemStatus();
-    await fetchStyles();
-    await fetchHistory();
+
+    supabaseClient = await initSupabase();
+    if (!supabaseClient) {
+        showLoginView();
+        return;
+    }
+
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (session) {
+        await handleAuthenticatedSession();
+    } else {
+        showLoginView();
+    }
+
+    supabaseClient.auth.onAuthStateChange(async (event, newSession) => {
+        if (event === 'SIGNED_IN' && newSession) {
+            await handleAuthenticatedSession();
+        } else if (event === 'SIGNED_OUT') {
+            appShellLoaded = false;
+            showLoginView();
+        }
+    });
 });

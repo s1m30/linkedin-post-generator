@@ -6,6 +6,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 
 from database.session import SessionLocal
+from modules.posts.models import Post
 from modules.posts.service import PostService
 from modules.scheduler.notifier import send_notification
 
@@ -22,19 +23,29 @@ async def run_generation_task(post_id: int):
     """
     logger.info(f"Starting background post generation for post ID: {post_id}")
     db: Session = SessionLocal()
+    user_id = None
     try:
+        # Background jobs aren't tied to an HTTP request/authenticated user, so
+        # look up the post's own owner first and use that for the scoped calls.
+        row = db.query(Post).filter(Post.id == post_id).first()
+        if not row:
+            logger.error(f"Scheduled post ID {post_id} no longer exists; skipping generation")
+            return
+        user_id = row.user_id
+
         # Generates content and updates status to completed/failed
-        post = await PostService.generate_post_content(db, post_id)
-        
+        post = await PostService.generate_post_content(db, post_id, user_id)
+
         # Send native Windows notification
         notification_title = f"LinkedIn Post Generated!"
         notification_msg = f"Your scheduled post '{post.title or 'No Title'}' is ready to review."
         send_notification(notification_title, notification_msg)
-        
+
         logger.info(f"Successfully generated scheduled post ID: {post_id}")
     except Exception as e:
         logger.error(f"Error in background task for post ID {post_id}: {e}")
-        PostService.update_post_status(db, post_id, "failed")
+        if user_id is not None:
+            PostService.update_post_status(db, post_id, user_id, "failed")
     finally:
         db.close()
 
