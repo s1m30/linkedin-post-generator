@@ -1,6 +1,3 @@
-// API Configuration
-const API_BASE = window.location.origin.includes(':8000') ? '' : 'http://localhost:8000';
-
 // UI Elements & State
 let activePostId = null;
 let activeAssistPostId = null;
@@ -145,7 +142,7 @@ async function apiFetch(path, options = {}) {
     const token = await getAccessToken();
     const headers = { ...(options.headers || {}) };
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    return fetch(`${API_BASE}${path}`, { ...options, headers });
+    return fetch(path, { ...options, headers });
 }
 
 function escapeHtml(text) {
@@ -1036,7 +1033,7 @@ function initTheme() {
 
 async function initSupabase() {
     try {
-        const res = await fetch(`${API_BASE}/api/config`);
+        const res = await fetch('/api/config');
         const config = await res.json();
         if (!config.supabase_url || !config.supabase_anon_key) {
             showToast("Supabase is not configured on the server yet", "error");
